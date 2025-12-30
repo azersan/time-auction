@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback } from 'react'
+import { useEffect, useRef, useCallback, useState } from 'react'
 import type { RoundPhase } from '@shared/types'
 
 interface Props {
@@ -18,6 +18,7 @@ export default function BidButton({
 }: Props) {
   const buttonRef = useRef<HTMLButtonElement>(null)
   const isHoldingRef = useRef(false)
+  const [toggleMode, setToggleMode] = useState(true) // Default to toggle mode
 
   const startHold = useCallback(() => {
     if (disabled || isHoldingRef.current) return
@@ -36,46 +37,73 @@ export default function BidButton({
     isHoldingRef.current = isHolding
   }, [isHolding])
 
-  // Mouse events
+  // Handle click for toggle mode
+  const handleClick = useCallback(() => {
+    if (!toggleMode || disabled) return
+    if (isHolding) {
+      endHold()
+    } else {
+      startHold()
+    }
+  }, [toggleMode, disabled, isHolding, startHold, endHold])
+
+  // Mouse events (hold mode only)
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault()
+    if (toggleMode) return
     startHold()
-  }, [startHold])
+  }, [toggleMode, startHold])
 
   const handleMouseUp = useCallback(() => {
+    if (toggleMode) return
     endHold()
-  }, [endHold])
+  }, [toggleMode, endHold])
 
-  // Touch events
+  // Touch events (hold mode only)
   const handleTouchStart = useCallback((e: React.TouchEvent) => {
     e.preventDefault()
+    if (toggleMode) return
     startHold()
-  }, [startHold])
+  }, [toggleMode, startHold])
 
   const handleTouchEnd = useCallback(() => {
+    if (toggleMode) return
     endHold()
-  }, [endHold])
+  }, [toggleMode, endHold])
 
   // Keyboard events
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.code === 'Space' || e.code === 'Enter') {
         e.preventDefault()
-        startHold()
+        if (toggleMode) {
+          // In toggle mode, key acts like a click
+          if (isHolding) {
+            endHold()
+          } else if (!disabled) {
+            startHold()
+          }
+        } else {
+          startHold()
+        }
       }
     }
 
     const handleKeyUp = (e: KeyboardEvent) => {
       if (e.code === 'Space' || e.code === 'Enter') {
         e.preventDefault()
-        endHold()
+        if (!toggleMode) {
+          endHold()
+        }
       }
     }
 
     window.addEventListener('keydown', handleKeyDown)
     window.addEventListener('keyup', handleKeyUp)
-    window.addEventListener('mouseup', handleMouseUp)
-    window.addEventListener('touchend', handleTouchEnd)
+    if (!toggleMode) {
+      window.addEventListener('mouseup', handleMouseUp)
+      window.addEventListener('touchend', handleTouchEnd)
+    }
 
     return () => {
       window.removeEventListener('keydown', handleKeyDown)
@@ -83,7 +111,7 @@ export default function BidButton({
       window.removeEventListener('mouseup', handleMouseUp)
       window.removeEventListener('touchend', handleTouchEnd)
     }
-  }, [startHold, endHold, handleMouseUp, handleTouchEnd])
+  }, [toggleMode, isHolding, disabled, startHold, endHold, handleMouseUp, handleTouchEnd])
 
   // Determine button state based on phase
   const getButtonStyle = () => {
@@ -127,7 +155,10 @@ export default function BidButton({
     if (disabled) return 'Wait...'
 
     if (!isHolding) {
-      return roundPhase === 'waiting_for_holds' ? 'HOLD TO JOIN' : 'HOLD'
+      if (roundPhase === 'waiting_for_holds') {
+        return toggleMode ? 'TAP TO JOIN' : 'HOLD TO JOIN'
+      }
+      return toggleMode ? 'TAP' : 'HOLD'
     }
 
     switch (roundPhase) {
@@ -145,17 +176,19 @@ export default function BidButton({
   const getHelpText = () => {
     if (disabled) return 'Waiting for round to start...'
 
+    const action = toggleMode ? 'Tap' : 'Hold'
+
     if (!isHolding) {
-      return 'Hold the button or press Space/Enter'
+      return `${action} the button or press Space/Enter`
     }
 
     switch (roundPhase) {
       case 'waiting_for_holds':
-        return 'Keep holding until everyone is ready'
+        return toggleMode ? 'Tap again to leave, or wait for everyone' : 'Keep holding until everyone is ready'
       case 'grace_period':
-        return 'Release now to opt out (no time lost)'
+        return toggleMode ? 'Tap to opt out (no time lost)' : 'Release to opt out (no time lost)'
       case 'bidding':
-        return 'Release to lock in your bid!'
+        return toggleMode ? 'Tap to lock in your bid!' : 'Release to lock in your bid!'
       default:
         return ''
     }
@@ -163,8 +196,26 @@ export default function BidButton({
 
   return (
     <div className="flex flex-col items-center">
+      {/* Mode toggle */}
+      <div className="mb-4 flex items-center gap-2 text-sm">
+        <span className={toggleMode ? 'text-gray-500' : 'text-white'}>Hold</span>
+        <button
+          onClick={() => setToggleMode(!toggleMode)}
+          className="relative w-12 h-6 bg-gray-700 rounded-full transition-colors"
+          aria-label="Toggle input mode"
+        >
+          <div
+            className={`absolute top-1 w-4 h-4 bg-indigo-500 rounded-full transition-all ${
+              toggleMode ? 'left-7' : 'left-1'
+            }`}
+          />
+        </button>
+        <span className={toggleMode ? 'text-white' : 'text-gray-500'}>Toggle</span>
+      </div>
+
       <button
         ref={buttonRef}
+        onClick={handleClick}
         onMouseDown={handleMouseDown}
         onTouchStart={handleTouchStart}
         disabled={disabled}
