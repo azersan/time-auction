@@ -13,8 +13,18 @@ export function useWebSocket(tableId: string | null, options: UseWebSocketOption
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [isConnected, setIsConnected] = useState(false)
 
+  // Store callbacks in refs to avoid re-creating connect function
+  const optionsRef = useRef(options)
+  optionsRef.current = options
+
   const connect = useCallback(() => {
     if (!tableId) return
+
+    // Don't connect if already connected or connecting
+    if (wsRef.current?.readyState === WebSocket.OPEN ||
+        wsRef.current?.readyState === WebSocket.CONNECTING) {
+      return
+    }
 
     const wsUrl = `${WS_BASE_URL}/ws/${tableId}`
 
@@ -23,12 +33,13 @@ export function useWebSocket(tableId: string | null, options: UseWebSocketOption
 
     ws.onopen = () => {
       setIsConnected(true)
-      options.onConnect?.()
+      optionsRef.current.onConnect?.()
     }
 
     ws.onclose = () => {
       setIsConnected(false)
-      options.onDisconnect?.()
+      wsRef.current = null
+      optionsRef.current.onDisconnect?.()
 
       // Attempt to reconnect after 2 seconds
       reconnectTimeoutRef.current = setTimeout(() => {
@@ -43,16 +54,17 @@ export function useWebSocket(tableId: string | null, options: UseWebSocketOption
     ws.onmessage = (event) => {
       try {
         const message = JSON.parse(event.data) as ServerMessage
-        options.onMessage?.(message)
+        optionsRef.current.onMessage?.(message)
       } catch (err) {
         console.error('Failed to parse WebSocket message:', err)
       }
     }
-  }, [tableId, options])
+  }, [tableId])
 
   const disconnect = useCallback(() => {
     if (reconnectTimeoutRef.current) {
       clearTimeout(reconnectTimeoutRef.current)
+      reconnectTimeoutRef.current = null
     }
     if (wsRef.current) {
       wsRef.current.close()
