@@ -573,11 +573,11 @@ export class GameRoom implements DurableObject {
 
     const connectedPlayers = Array.from(this.players.values()).filter(p => p.isConnected)
 
-    // Round ends when all connected players have released
-    // (hasReleasedThisRound means they either bid or opted out during grace period)
-    const allReleased = connectedPlayers.every(p => p.hasReleasedThisRound)
+    // Round ends when NO connected player is still holding
+    // bidStartTime !== null means they're still holding the button
+    const someoneStillHolding = connectedPlayers.some(p => p.bidStartTime !== null)
 
-    if (allReleased) {
+    if (!someoneStillHolding) {
       this.endRound()
     }
   }
