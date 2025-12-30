@@ -4,9 +4,10 @@ interface Props {
   players: Player[]
   playerBids: BidStatus[]
   currentPlayerId: string | null
+  playersHolding: Set<string>
 }
 
-export default function PlayerBidStatus({ players, playerBids, currentPlayerId }: Props) {
+export default function PlayerBidStatus({ players, playerBids, currentPlayerId, playersHolding }: Props) {
   const getBidStatus = (playerId: string): BidStatus | undefined => {
     return playerBids.find(b => b.playerId === playerId)
   }
@@ -18,6 +19,7 @@ export default function PlayerBidStatus({ players, playerBids, currentPlayerId }
         {players.map((player) => {
           const bidStatus = getBidStatus(player.id)
           const isCurrentPlayer = player.id === currentPlayerId
+          const isHolding = playersHolding.has(player.id)
 
           return (
             <div
@@ -31,7 +33,7 @@ export default function PlayerBidStatus({ players, playerBids, currentPlayerId }
               <div className="flex items-center gap-3">
                 {/* Status indicator */}
                 <div className={`w-2 h-2 rounded-full ${
-                  bidStatus?.isBidding
+                  isHolding
                     ? 'bg-yellow-500 animate-pulse'
                     : bidStatus?.hasReleasedThisRound
                       ? 'bg-gray-500'
@@ -63,10 +65,10 @@ export default function PlayerBidStatus({ players, playerBids, currentPlayerId }
                   <div className="text-white font-mono">{formatTimeShort(player.timeRemainingMs)}</div>
                 </div>
 
-                {/* Current bid status */}
+                {/* Current status */}
                 <div className="w-20 text-right">
-                  {bidStatus?.isBidding ? (
-                    <span className="text-yellow-400">Bidding...</span>
+                  {isHolding ? (
+                    <span className="text-yellow-400">Holding</span>
                   ) : bidStatus?.hasReleasedThisRound ? (
                     <span className="text-gray-500">Released</span>
                   ) : (

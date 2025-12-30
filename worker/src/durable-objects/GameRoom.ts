@@ -8,12 +8,12 @@ import type {
   ClientMessage,
   ServerMessage,
   ErrorCode,
+  RoundPhase,
 } from '../../../shared/types'
 import {
   TIE_THRESHOLD_MS,
   PRE_ROUND_COUNTDOWN_MS,
   ROUND_RESULTS_DISPLAY_MS,
-  MIN_BIDDING_PHASE_MS,
   RECONNECT_WINDOW_MS,
   MAX_LATENCY_COMPENSATION_MS,
 } from '../../../shared/constants'
@@ -42,7 +42,7 @@ interface TableState {
   status: 'lobby' | 'playing' | 'finished'
   hostId: string | null
   currentRound: number
-  roundPhase: 'pre_round' | 'grace_period' | 'bidding' | 'resolution'
+  roundPhase: RoundPhase
   phaseStartTime: number
   roundHistory: RoundResult[]
 }
@@ -211,17 +211,11 @@ export class GameRoom implements DurableObject {
       const now = Date.now()
 
       if (this.tableState.roundPhase === 'pre_round') {
-        // Pre-round countdown finished, start grace period
-        this.tableState.roundPhase = 'grace_period'
+        // Pre-round countdown finished, go to waiting for holds
+        this.tableState.roundPhase = 'waiting_for_holds'
         this.tableState.phaseStartTime = now
 
-        this.broadcast({
-          type: 'roundActive',
-          gracePeriodEndsAt: now + this.tableState.settings.gracePeriodMs,
-        })
-
-        // Schedule grace period end
-        await this.state.storage.setAlarm(now + this.tableState.settings.gracePeriodMs)
+        this.broadcastGameState()
       } else if (this.tableState.roundPhase === 'grace_period') {
         // Grace period ended, start bidding phase
         this.tableState.roundPhase = 'bidding'
@@ -229,11 +223,7 @@ export class GameRoom implements DurableObject {
 
         this.broadcast({ type: 'graceExpired' })
 
-        // Schedule minimum bidding phase end
-        await this.state.storage.setAlarm(now + MIN_BIDDING_PHASE_MS)
-      } else if (this.tableState.roundPhase === 'bidding') {
-        // Minimum bidding time has passed, check if round should end
-        this.checkRoundEnd(true)
+        // Don't schedule an alarm - round ends when all release
       } else if (this.tableState.roundPhase === 'resolution') {
         // Resolution phase finished, start next round or end game
         if (this.tableState.currentRound >= this.tableState.settings.numRounds) {
@@ -442,7 +432,7 @@ export class GameRoom implements DurableObject {
 
     this.broadcast({ type: 'gameStarting', countdown: 3 })
 
-    // Start first round after countdown
+    // Start first round after brief countdown
     await this.state.storage.setAlarm(Date.now() + PRE_ROUND_COUNTDOWN_MS)
     this.tableState.roundPhase = 'pre_round'
     this.tableState.phaseStartTime = Date.now()
@@ -459,7 +449,6 @@ export class GameRoom implements DurableObject {
       type: 'roundStart',
       round: 1,
       totalRounds: this.tableState.settings.numRounds,
-      startsAt: Date.now() + PRE_ROUND_COUNTDOWN_MS,
     })
 
     await this.saveState()
@@ -470,19 +459,28 @@ export class GameRoom implements DurableObject {
     if (!session || !this.tableState) return
 
     if (this.tableState.status !== 'playing') return
-    if (this.tableState.roundPhase !== 'grace_period' && this.tableState.roundPhase !== 'bidding') return
-    if (session.bidStartTime !== null) return // Already bidding
+    if (session.bidStartTime !== null) return // Already holding
+    if (session.hasReleasedThisRound) return // Already released this round
+
+    const phase = this.tableState.roundPhase
+
+    // Can only start holding during waiting_for_holds or grace_period
+    if (phase !== 'waiting_for_holds' && phase !== 'grace_period') return
 
     const serverTime = Date.now()
     const latency = Math.min(Math.abs(serverTime - clientTimestamp), MAX_LATENCY_COMPENSATION_MS)
     session.bidStartTime = serverTime - latency
 
     this.broadcast({
-      type: 'bidUpdate',
+      type: 'playerHoldingUpdate',
       playerId: session.id,
-      isBidding: true,
-      currentBidMs: 0,
+      isHolding: true,
     })
+
+    // Check if all players are now holding (only during waiting phase)
+    if (phase === 'waiting_for_holds') {
+      await this.checkAllPlayersHolding()
+    }
 
     await this.saveState()
   }
@@ -491,60 +489,95 @@ export class GameRoom implements DurableObject {
     const session = this.getSessionFromWs(ws)
     if (!session || !this.tableState) return
 
-    if (session.bidStartTime === null) return // Not bidding
+    if (session.bidStartTime === null) return // Not holding
 
     const serverTime = Date.now()
     const latency = Math.min(Math.abs(serverTime - clientTimestamp), MAX_LATENCY_COMPENSATION_MS)
     session.bidEndTime = serverTime - latency
 
-    // Calculate bid duration
-    const bidDuration = session.bidEndTime - session.bidStartTime
+    const phase = this.tableState.roundPhase
 
-    // Check if bid was during grace period (no penalty)
-    const graceEnded = this.tableState.roundPhase === 'bidding'
-    if (!graceEnded) {
+    if (phase === 'waiting_for_holds') {
+      // Just stopped holding before grace period started
+      session.bidStartTime = null
+      session.bidEndTime = null
+
+      this.broadcast({
+        type: 'playerHoldingUpdate',
+        playerId: session.id,
+        isHolding: false,
+      })
+    } else if (phase === 'grace_period') {
+      // Released during grace period - opting out (no bid)
       session.currentBidMs = 0
-    } else {
-      // Only count time after grace period
+      session.hasReleasedThisRound = true
+      session.bidStartTime = null
+      session.bidEndTime = null
+
+      this.broadcast({
+        type: 'bidUpdate',
+        playerId: session.id,
+        isBidding: false,
+        currentBidMs: 0,
+      })
+    } else if (phase === 'bidding') {
+      // Released during bidding - lock in their bid
+      // Bid time = time held after grace period ended
       const graceEndTime = this.tableState.phaseStartTime
       const effectiveStart = Math.max(session.bidStartTime, graceEndTime)
       session.currentBidMs = Math.max(0, session.bidEndTime - effectiveStart)
+      session.hasReleasedThisRound = true
+
+      this.broadcast({
+        type: 'bidUpdate',
+        playerId: session.id,
+        isBidding: false,
+        currentBidMs: session.currentBidMs,
+      })
+
+      session.bidStartTime = null
+      session.bidEndTime = null
+
+      // Check if round should end (all players released)
+      this.checkRoundEnd()
     }
-
-    session.hasReleasedThisRound = true
-
-    this.broadcast({
-      type: 'bidUpdate',
-      playerId: session.id,
-      isBidding: false,
-      currentBidMs: session.currentBidMs,
-    })
-
-    // Reset bid state
-    session.bidStartTime = null
-    session.bidEndTime = null
-
-    // Check if round should end
-    this.checkRoundEnd()
 
     await this.saveState()
   }
 
-  private checkRoundEnd(forceCheck = false): void {
+  private async checkAllPlayersHolding(): Promise<void> {
+    if (!this.tableState || this.tableState.roundPhase !== 'waiting_for_holds') return
+
+    const connectedPlayers = Array.from(this.players.values()).filter(p => p.isConnected)
+    const allHolding = connectedPlayers.every(p => p.bidStartTime !== null)
+
+    if (allHolding && connectedPlayers.length >= 2) {
+      // Start grace period!
+      const now = Date.now()
+      this.tableState.roundPhase = 'grace_period'
+      this.tableState.phaseStartTime = now
+
+      this.broadcast({
+        type: 'allPlayersHolding',
+        gracePeriodEndsAt: now + this.tableState.settings.gracePeriodMs,
+      })
+
+      // Schedule grace period end
+      await this.state.storage.setAlarm(now + this.tableState.settings.gracePeriodMs)
+      await this.saveState()
+    }
+  }
+
+  private checkRoundEnd(): void {
     if (!this.tableState || this.tableState.roundPhase !== 'bidding') return
 
     const connectedPlayers = Array.from(this.players.values()).filter(p => p.isConnected)
 
-    // Check if all connected players have released (not actively bidding)
-    const allReleased = connectedPlayers.every(p => p.hasReleasedThisRound || p.bidStartTime === null)
+    // Round ends when all connected players have released
+    // (hasReleasedThisRound means they either bid or opted out during grace period)
+    const allReleased = connectedPlayers.every(p => p.hasReleasedThisRound)
 
-    // Check if at least one player actually made a bid
-    const someoneActuallyBid = connectedPlayers.some(p => p.hasReleasedThisRound)
-
-    // Round ends if:
-    // 1. All players released AND at least one person bid, OR
-    // 2. All players released AND minimum bidding time passed (forceCheck)
-    if (allReleased && (someoneActuallyBid || forceCheck)) {
+    if (allReleased) {
       this.endRound()
     }
   }
@@ -649,10 +682,9 @@ export class GameRoom implements DurableObject {
       type: 'roundStart',
       round: this.tableState.currentRound,
       totalRounds: this.tableState.settings.numRounds,
-      startsAt: Date.now() + PRE_ROUND_COUNTDOWN_MS,
     })
 
-    // Schedule grace period start
+    // Schedule transition to waiting_for_holds
     await this.state.storage.setAlarm(Date.now() + PRE_ROUND_COUNTDOWN_MS)
 
     await this.saveState()
@@ -796,6 +828,13 @@ export class GameRoom implements DurableObject {
       settings: this.tableState.settings,
       players: Array.from(this.players.values()).map(p => this.toPlayerInfo(p)),
       hostId: this.tableState.hostId ?? '',
+    })
+  }
+
+  private broadcastGameState(): void {
+    this.broadcast({
+      type: 'gameState',
+      state: this.getGameState(),
     })
   }
 

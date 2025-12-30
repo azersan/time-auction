@@ -58,10 +58,11 @@ export interface PlayerBidStatus {
 export type TableStatus = 'lobby' | 'playing' | 'finished';
 
 export type RoundPhase =
-  | 'pre_round'      // Countdown before round starts
-  | 'grace_period'   // Can release without penalty
-  | 'bidding'        // Past grace period, bids count
-  | 'resolution';    // Showing results
+  | 'pre_round'           // Brief countdown before round
+  | 'waiting_for_holds'   // Waiting for all players to hold
+  | 'grace_period'        // All holding, can release without penalty
+  | 'bidding'             // Past grace period, bids count
+  | 'resolution';         // Showing results
 
 export interface GameState {
   status: TableStatus;
@@ -127,9 +128,10 @@ export type ServerMessage =
   | { type: 'playerKicked'; playerId: string }
   | { type: 'gameStarting'; countdown: number }
   | { type: 'gameState'; state: GameState }
-  | { type: 'roundStart'; round: number; totalRounds: number; startsAt: number }
-  | { type: 'roundActive'; gracePeriodEndsAt: number }
+  | { type: 'roundStart'; round: number; totalRounds: number }
+  | { type: 'allPlayersHolding'; gracePeriodEndsAt: number }
   | { type: 'graceExpired' }
+  | { type: 'playerHoldingUpdate'; playerId: string; isHolding: boolean }
   | { type: 'bidUpdate'; playerId: string; isBidding: boolean; currentBidMs: number }
   | { type: 'roundEnd'; results: RoundResult; nextRoundIn: number }
   | { type: 'gameEnd'; standings: FinalStanding[] }

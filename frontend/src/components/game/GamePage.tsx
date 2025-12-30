@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useRef } from 'react'
 import { useParams } from 'react-router-dom'
 import { useGame } from '@/contexts/GameContext'
 import { useWebSocket } from '@/hooks/useWebSocket'
@@ -23,12 +23,14 @@ export default function GamePage() {
   const { state, dispatch } = useGame()
   const [showRoundResults, setShowRoundResults] = useState(false)
   const [currentRoundResult, setCurrentRoundResult] = useState<RoundResult | null>(null)
-  const [isBidding, setIsBidding] = useState(false)
+  const [isHolding, setIsHolding] = useState(false)
   const [currentBidMs, setCurrentBidMs] = useState(0)
-  const [graceExpired, setGraceExpired] = useState(false)
   const [roundPhase, setRoundPhase] = useState<RoundPhase>('pre_round')
   const [countdown, setCountdown] = useState<number | null>(null)
+  const [graceCountdown, setGraceCountdown] = useState<number | null>(null)
   const [hasReconnected, setHasReconnected] = useState(false)
+  const [playersHolding, setPlayersHolding] = useState<Set<string>>(new Set())
+  const holdStartTimeRef = useRef<number | null>(null)
 
   const { sendMessage, isConnected } = useWebSocket(tableId ?? null, {
     onMessage: (msg) => {
@@ -37,34 +39,59 @@ export default function GamePage() {
       } else if (msg.type === 'gameState') {
         dispatch({ type: 'SET_GAME_STATE', state: msg.state })
         setRoundPhase(msg.state.roundPhase)
-        // Update players from game state
         dispatch({ type: 'UPDATE_PLAYERS', players: msg.state.players })
       } else if (msg.type === 'lobbyState') {
         dispatch({ type: 'SET_LOBBY_STATE', settings: msg.settings, players: msg.players, hostId: msg.hostId })
       } else if (msg.type === 'roundStart') {
         setShowRoundResults(false)
         setCurrentRoundResult(null)
-        setIsBidding(false)
+        setIsHolding(false)
         setCurrentBidMs(0)
-        setGraceExpired(false)
         setRoundPhase('pre_round')
         setCountdown(3)
-      } else if (msg.type === 'roundActive') {
+        setGraceCountdown(null)
+        setPlayersHolding(new Set())
+        holdStartTimeRef.current = null
+      } else if (msg.type === 'allPlayersHolding') {
+        // All players are holding, grace period started
         setRoundPhase('grace_period')
         setCountdown(null)
+        // Start grace period countdown
+        const graceDuration = msg.gracePeriodEndsAt - Date.now()
+        setGraceCountdown(Math.ceil(graceDuration / 1000))
       } else if (msg.type === 'graceExpired') {
-        setGraceExpired(true)
         setRoundPhase('bidding')
+        setGraceCountdown(null)
+        // Now time starts counting for real
+        if (isHolding) {
+          holdStartTimeRef.current = Date.now()
+        }
+      } else if (msg.type === 'playerHoldingUpdate') {
+        setPlayersHolding(prev => {
+          const next = new Set(prev)
+          if (msg.isHolding) {
+            next.add(msg.playerId)
+          } else {
+            next.delete(msg.playerId)
+          }
+          return next
+        })
+      } else if (msg.type === 'bidUpdate') {
+        // Player released their bid
+        setPlayersHolding(prev => {
+          const next = new Set(prev)
+          next.delete(msg.playerId)
+          return next
+        })
       } else if (msg.type === 'roundEnd') {
         setCurrentRoundResult(msg.results)
         dispatch({ type: 'ADD_ROUND_RESULT', result: msg.results })
         setShowRoundResults(true)
-        setIsBidding(false)
+        setIsHolding(false)
         setRoundPhase('resolution')
+        holdStartTimeRef.current = null
       } else if (msg.type === 'gameEnd') {
         dispatch({ type: 'SET_FINAL_STANDINGS', standings: msg.standings })
-      } else if (msg.type === 'bidUpdate') {
-        // Update game state with new bid info
       }
     },
   })
@@ -84,7 +111,7 @@ export default function GamePage() {
     }
   }, [isConnected, tableId, hasReconnected, sendMessage])
 
-  // Countdown timer
+  // Pre-round countdown timer
   useEffect(() => {
     if (countdown === null || countdown <= 0) return
 
@@ -95,37 +122,75 @@ export default function GamePage() {
     return () => clearTimeout(timer)
   }, [countdown])
 
-  const handleBidStart = useCallback(() => {
-    setIsBidding(true)
+  // Grace period countdown timer
+  useEffect(() => {
+    if (graceCountdown === null || graceCountdown <= 0) return
+
+    const timer = setTimeout(() => {
+      setGraceCountdown(graceCountdown - 1)
+    }, 1000)
+
+    return () => clearTimeout(timer)
+  }, [graceCountdown])
+
+  const handleHoldStart = useCallback(() => {
+    setIsHolding(true)
     sendMessage({ type: 'bidStart', clientTimestamp: Date.now() })
   }, [sendMessage])
 
-  const handleBidEnd = useCallback(() => {
-    setIsBidding(false)
+  const handleHoldEnd = useCallback(() => {
+    setIsHolding(false)
+    holdStartTimeRef.current = null
     sendMessage({ type: 'bidEnd', clientTimestamp: Date.now() })
   }, [sendMessage])
 
-  // Update bid timer
+  // Update bid timer (only counts during bidding phase)
   useEffect(() => {
-    if (!isBidding) {
-      setCurrentBidMs(0)
+    if (!isHolding || roundPhase !== 'bidding') {
+      if (roundPhase !== 'bidding') {
+        setCurrentBidMs(0)
+      }
       return
     }
 
-    const startTime = Date.now()
+    // Start tracking from when bidding phase began
+    if (!holdStartTimeRef.current) {
+      holdStartTimeRef.current = Date.now()
+    }
+
     const interval = setInterval(() => {
-      setCurrentBidMs(Date.now() - startTime)
+      if (holdStartTimeRef.current) {
+        setCurrentBidMs(Date.now() - holdStartTimeRef.current)
+      }
     }, 50)
 
     return () => clearInterval(interval)
-  }, [isBidding])
+  }, [isHolding, roundPhase])
 
   const currentPlayer = state.players.find(p => p.id === state.playerId)
-  const gracePeriodMs = state.settings?.gracePeriodMs ?? 5000
-  const canBid = roundPhase === 'grace_period' || roundPhase === 'bidding'
+  const canHold = roundPhase === 'waiting_for_holds' || roundPhase === 'grace_period' || roundPhase === 'bidding'
+  const hasReleased = roundPhase === 'bidding' && !isHolding && playersHolding.size < state.players.filter(p => p.isConnected).length
 
   if (state.finalStandings) {
     return <FinalResults standings={state.finalStandings} currentPlayerId={state.playerId} />
+  }
+
+  // Determine phase status message
+  const getPhaseMessage = () => {
+    switch (roundPhase) {
+      case 'pre_round':
+        return 'Get ready...'
+      case 'waiting_for_holds':
+        return `Hold your button to participate (${playersHolding.size}/${state.players.filter(p => p.isConnected).length} holding)`
+      case 'grace_period':
+        return graceCountdown !== null ? `Grace period: ${graceCountdown}s - release to opt out` : 'Grace period...'
+      case 'bidding':
+        return 'BIDDING! Release to lock in your bid'
+      case 'resolution':
+        return 'Round complete'
+      default:
+        return ''
+    }
   }
 
   return (
@@ -158,25 +223,34 @@ export default function GamePage() {
             </div>
           </div>
 
+          {/* Phase status */}
+          <div className={`text-center mb-4 text-lg font-semibold ${
+            roundPhase === 'bidding' ? 'text-red-400' :
+            roundPhase === 'grace_period' ? 'text-green-400' :
+            roundPhase === 'waiting_for_holds' ? 'text-yellow-400' :
+            'text-gray-400'
+          }`}>
+            {getPhaseMessage()}
+          </div>
+
           <BidButton
-            onBidStart={handleBidStart}
-            onBidEnd={handleBidEnd}
-            isBidding={isBidding}
-            currentBidMs={currentBidMs}
-            gracePeriodMs={gracePeriodMs}
-            graceExpired={graceExpired}
-            disabled={!canBid}
+            onBidStart={handleHoldStart}
+            onBidEnd={handleHoldEnd}
+            isHolding={isHolding}
+            roundPhase={roundPhase}
+            disabled={!canHold || hasReleased}
           />
 
-          {isBidding && (
+          {isHolding && roundPhase === 'bidding' && (
             <div className="text-center mt-4">
               <div className="text-sm text-gray-400">Current Bid</div>
-              <div className="text-2xl font-mono text-white">{formatTime(currentBidMs)}</div>
-              {!graceExpired && (
-                <div className="text-green-400 text-sm mt-1">
-                  Grace period - release now to cancel!
-                </div>
-              )}
+              <div className="text-2xl font-mono text-red-400">{formatTime(currentBidMs)}</div>
+            </div>
+          )}
+
+          {hasReleased && (
+            <div className="text-center mt-4 text-gray-400">
+              You've submitted your bid. Waiting for others...
             </div>
           )}
         </div>
@@ -186,6 +260,7 @@ export default function GamePage() {
           players={state.players}
           playerBids={state.gameState?.playerBids ?? []}
           currentPlayerId={state.playerId}
+          playersHolding={playersHolding}
         />
 
         {/* Round results modal */}
