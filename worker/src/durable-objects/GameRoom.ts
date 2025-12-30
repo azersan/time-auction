@@ -58,10 +58,15 @@ export class GameRoom implements DurableObject {
   }
 
   // Get player session from WebSocket using attachment (survives hibernation)
+  // Also marks player as connected since they're actively sending messages
   private getSessionFromWs(ws: WebSocket): PlayerSession | null {
     const attachment = ws.deserializeAttachment() as { playerId: string } | null
     if (!attachment?.playerId) return null
-    return this.players.get(attachment.playerId) ?? null
+    const session = this.players.get(attachment.playerId)
+    if (session) {
+      session.isConnected = true // Mark as connected since they're active
+    }
+    return session ?? null
   }
 
   // Set player ID on WebSocket attachment
