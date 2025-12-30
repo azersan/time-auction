@@ -29,6 +29,9 @@ type GameAction =
   | { type: 'SET_TABLE_ID'; tableId: string }
   | { type: 'SET_LOBBY_STATE'; settings: TableSettings; players: Player[]; hostId: string }
   | { type: 'UPDATE_PLAYERS'; players: Player[] }
+  | { type: 'PLAYER_JOINED'; player: Player }
+  | { type: 'PLAYER_LEFT'; playerId: string }
+  | { type: 'PLAYER_READY'; playerId: string; isReady: boolean }
   | { type: 'SET_GAME_STATE'; state: GameState }
   | { type: 'ADD_ROUND_RESULT'; result: RoundResult }
   | { type: 'SET_FINAL_STANDINGS'; standings: FinalStanding[] }
@@ -79,6 +82,26 @@ function gameReducer(state: GameContextState, action: GameAction): GameContextSt
         ...state,
         players: action.players,
         isHost: state.hostId === state.playerId,
+      }
+
+    case 'PLAYER_JOINED':
+      return {
+        ...state,
+        players: [...state.players.filter(p => p.id !== action.player.id), action.player],
+      }
+
+    case 'PLAYER_LEFT':
+      return {
+        ...state,
+        players: state.players.filter(p => p.id !== action.playerId),
+      }
+
+    case 'PLAYER_READY':
+      return {
+        ...state,
+        players: state.players.map(p =>
+          p.id === action.playerId ? { ...p, isReady: action.isReady } : p
+        ),
       }
 
     case 'SET_GAME_STATE':

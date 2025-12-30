@@ -22,8 +22,12 @@ export default function LobbyPage() {
         setHasJoined(true)
       } else if (msg.type === 'lobbyState') {
         dispatch({ type: 'SET_LOBBY_STATE', settings: msg.settings, players: msg.players, hostId: msg.hostId })
-      } else if (msg.type === 'playerJoined' || msg.type === 'playerLeft' || msg.type === 'playerReady') {
-        // These will be handled by updating the full player list
+      } else if (msg.type === 'playerJoined') {
+        dispatch({ type: 'PLAYER_JOINED', player: msg.player })
+      } else if (msg.type === 'playerLeft') {
+        dispatch({ type: 'PLAYER_LEFT', playerId: msg.playerId })
+      } else if (msg.type === 'playerReady') {
+        dispatch({ type: 'PLAYER_READY', playerId: msg.playerId, isReady: msg.isReady })
       } else if (msg.type === 'gameStarting') {
         // Redirect to game page
         navigate(`/game/${tableId}/play`)
