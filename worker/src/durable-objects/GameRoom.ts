@@ -48,13 +48,24 @@ interface TableState {
 
 export class GameRoom implements DurableObject {
   private state: DurableObjectState
-  private sessions: Map<WebSocket, PlayerSession> = new Map()
   private players: Map<string, PlayerSession> = new Map()
   private tableState: TableState | null = null
   private initialized = false
 
   constructor(state: DurableObjectState) {
     this.state = state
+  }
+
+  // Get player session from WebSocket using attachment (survives hibernation)
+  private getSessionFromWs(ws: WebSocket): PlayerSession | null {
+    const attachment = ws.deserializeAttachment() as { playerId: string } | null
+    if (!attachment?.playerId) return null
+    return this.players.get(attachment.playerId) ?? null
+  }
+
+  // Set player ID on WebSocket attachment
+  private setWsPlayerId(ws: WebSocket, playerId: string): void {
+    ws.serializeAttachment({ playerId })
   }
 
   private async loadState(): Promise<void> {
@@ -136,6 +147,7 @@ export class GameRoom implements DurableObject {
       const pair = new WebSocketPair()
       const [client, server] = Object.values(pair)
 
+      // Accept without tags initially - we'll tag after join
       this.state.acceptWebSocket(server)
 
       return new Response(null, {
@@ -167,10 +179,9 @@ export class GameRoom implements DurableObject {
   async webSocketClose(ws: WebSocket): Promise<void> {
     await this.loadState()
 
-    const session = this.sessions.get(ws)
+    const session = this.getSessionFromWs(ws)
     if (session) {
       session.isConnected = false
-      this.sessions.delete(ws)
 
       // Broadcast disconnection
       this.broadcast({
@@ -306,7 +317,7 @@ export class GameRoom implements DurableObject {
       for (const [playerId, player] of this.players) {
         if (player.reconnectToken === reconnectToken) {
           player.isConnected = true
-          this.sessions.set(ws, player)
+          this.setWsPlayerId(ws, player.id)
 
           this.send(ws, {
             type: 'welcome',
@@ -365,7 +376,7 @@ export class GameRoom implements DurableObject {
     }
 
     this.players.set(playerId, session)
-    this.sessions.set(ws, session)
+    this.setWsPlayerId(ws, playerId)
 
     if (isHost) {
       this.tableState.hostId = playerId
@@ -388,7 +399,7 @@ export class GameRoom implements DurableObject {
   }
 
   private async handleReady(ws: WebSocket, isReady: boolean): Promise<void> {
-    const session = this.sessions.get(ws)
+    const session = this.getSessionFromWs(ws)
     if (!session || this.tableState?.status !== 'lobby') return
 
     session.isReady = isReady
@@ -402,7 +413,7 @@ export class GameRoom implements DurableObject {
   }
 
   private async handleStartGame(ws: WebSocket): Promise<void> {
-    const session = this.sessions.get(ws)
+    const session = this.getSessionFromWs(ws)
     if (!session || !this.tableState) return
 
     if (!session.isHost) {
@@ -450,7 +461,7 @@ export class GameRoom implements DurableObject {
   }
 
   private async handleBidStart(ws: WebSocket, clientTimestamp: number): Promise<void> {
-    const session = this.sessions.get(ws)
+    const session = this.getSessionFromWs(ws)
     if (!session || !this.tableState) return
 
     if (this.tableState.status !== 'playing') return
@@ -472,7 +483,7 @@ export class GameRoom implements DurableObject {
   }
 
   private async handleBidEnd(ws: WebSocket, clientTimestamp: number): Promise<void> {
-    const session = this.sessions.get(ws)
+    const session = this.getSessionFromWs(ws)
     if (!session || !this.tableState) return
 
     if (session.bidStartTime === null) return // Not bidding
@@ -673,7 +684,7 @@ export class GameRoom implements DurableObject {
   }
 
   private async handleKick(ws: WebSocket, playerId: string): Promise<void> {
-    const session = this.sessions.get(ws)
+    const session = this.getSessionFromWs(ws)
     if (!session || !this.tableState) return
 
     if (!session.isHost) {
@@ -690,11 +701,11 @@ export class GameRoom implements DurableObject {
     if (!playerToKick) return
 
     // Find and close their WebSocket
-    for (const [otherWs, otherSession] of this.sessions) {
-      if (otherSession.id === playerId) {
+    for (const otherWs of this.state.getWebSockets()) {
+      const otherSession = this.getSessionFromWs(otherWs)
+      if (otherSession?.id === playerId) {
         this.send(otherWs, { type: 'playerKicked', playerId })
         otherWs.close()
-        this.sessions.delete(otherWs)
         break
       }
     }
@@ -706,10 +717,9 @@ export class GameRoom implements DurableObject {
   }
 
   private async handleLeave(ws: WebSocket): Promise<void> {
-    const session = this.sessions.get(ws)
+    const session = this.getSessionFromWs(ws)
     if (!session) return
 
-    this.sessions.delete(ws)
     session.isConnected = false
 
     if (this.tableState?.status === 'lobby') {
@@ -804,7 +814,9 @@ export class GameRoom implements DurableObject {
   }
 
   private broadcast(message: ServerMessage, exclude?: WebSocket): void {
-    for (const ws of this.sessions.keys()) {
+    // Use getWebSockets() to survive hibernation
+    const webSockets = this.state.getWebSockets()
+    for (const ws of webSockets) {
       if (ws !== exclude) {
         this.send(ws, message)
       }
