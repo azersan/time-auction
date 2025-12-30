@@ -5,6 +5,20 @@ import { useWebSocket } from '@/hooks/useWebSocket'
 import PlayerList from './PlayerList'
 import HostControls from './HostControls'
 
+function getStoredSession(tableId: string) {
+  try {
+    const stored = sessionStorage.getItem(`session_${tableId}`)
+    if (stored) {
+      return JSON.parse(stored) as { playerName: string; reconnectToken: string }
+    }
+  } catch {}
+  return null
+}
+
+function storeSession(tableId: string, playerName: string, reconnectToken: string) {
+  sessionStorage.setItem(`session_${tableId}`, JSON.stringify({ playerName, reconnectToken }))
+}
+
 export default function LobbyPage() {
   const { tableId } = useParams<{ tableId: string }>()
   const navigate = useNavigate()
@@ -14,11 +28,16 @@ export default function LobbyPage() {
   const [needsPassword, setNeedsPassword] = useState(false)
   const [hasJoined, setHasJoined] = useState(false)
   const [joinError, setJoinError] = useState<string | null>(null)
+  const [attemptedReconnect, setAttemptedReconnect] = useState(false)
 
   const { sendMessage, isConnected } = useWebSocket(tableId ?? null, {
     onMessage: (msg) => {
       if (msg.type === 'welcome') {
         dispatch({ type: 'SET_PLAYER_INFO', playerId: msg.playerId, reconnectToken: msg.reconnectToken, serverTime: msg.serverTime })
+        // Store session for reconnection on refresh
+        if (tableId && playerName) {
+          storeSession(tableId, playerName, msg.reconnectToken)
+        }
         setHasJoined(true)
       } else if (msg.type === 'lobbyState') {
         dispatch({ type: 'SET_LOBBY_STATE', settings: msg.settings, players: msg.players, hostId: msg.hostId })
@@ -53,6 +72,22 @@ export default function LobbyPage() {
       dispatch({ type: 'SET_TABLE_ID', tableId })
     }
   }, [tableId, dispatch])
+
+  // Auto-reconnect with stored session
+  useEffect(() => {
+    if (isConnected && tableId && !hasJoined && !attemptedReconnect) {
+      const storedSession = getStoredSession(tableId)
+      if (storedSession) {
+        setAttemptedReconnect(true)
+        setPlayerName(storedSession.playerName)
+        sendMessage({
+          type: 'join',
+          playerName: storedSession.playerName,
+          reconnectToken: storedSession.reconnectToken,
+        })
+      }
+    }
+  }, [isConnected, tableId, hasJoined, attemptedReconnect, sendMessage])
 
   const handleJoin = (e: React.FormEvent) => {
     e.preventDefault()
