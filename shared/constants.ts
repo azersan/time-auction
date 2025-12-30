@@ -24,6 +24,7 @@ export const MAX_PASSWORD_LENGTH = 50;
 // Timing
 export const PRE_ROUND_COUNTDOWN_MS = 3000;      // 3 seconds before round
 export const ROUND_RESULTS_DISPLAY_MS = 5000;   // 5 seconds to show results
+export const MIN_BIDDING_PHASE_MS = 10000;      // 10 seconds minimum bidding time
 export const RECONNECT_WINDOW_MS = 30000;        // 30 seconds to reconnect
 export const MAX_LATENCY_COMPENSATION_MS = 200;  // Max latency adjustment
 

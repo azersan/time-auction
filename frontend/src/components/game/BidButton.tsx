@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback } from 'react'
+import { useEffect, useRef, useCallback, useState } from 'react'
 
 interface Props {
   onBidStart: () => void
@@ -21,6 +21,7 @@ export default function BidButton({
 }: Props) {
   const buttonRef = useRef<HTMLButtonElement>(null)
   const isHoldingRef = useRef(false)
+  const [toggleMode, setToggleMode] = useState(true) // Default to toggle mode
 
   const startBid = useCallback(() => {
     if (disabled || isHoldingRef.current) return
@@ -34,46 +35,73 @@ export default function BidButton({
     onBidEnd()
   }, [onBidEnd])
 
-  // Mouse events
+  // Handle click for toggle mode
+  const handleClick = useCallback(() => {
+    if (!toggleMode || disabled) return
+    if (isBidding) {
+      endBid()
+    } else {
+      startBid()
+    }
+  }, [toggleMode, disabled, isBidding, startBid, endBid])
+
+  // Mouse events (hold mode only)
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault()
+    if (toggleMode) return // Handle via click instead
     startBid()
-  }, [startBid])
+  }, [toggleMode, startBid])
 
   const handleMouseUp = useCallback(() => {
+    if (toggleMode) return // Handle via click instead
     endBid()
-  }, [endBid])
+  }, [toggleMode, endBid])
 
-  // Touch events
+  // Touch events (hold mode only)
   const handleTouchStart = useCallback((e: React.TouchEvent) => {
     e.preventDefault()
+    if (toggleMode) return // Handle via click instead
     startBid()
-  }, [startBid])
+  }, [toggleMode, startBid])
 
   const handleTouchEnd = useCallback(() => {
+    if (toggleMode) return // Handle via click instead
     endBid()
-  }, [endBid])
+  }, [toggleMode, endBid])
 
   // Keyboard events
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.code === 'Space' || e.code === 'Enter') {
         e.preventDefault()
-        startBid()
+        if (toggleMode) {
+          // In toggle mode, Space/Enter acts like a click
+          if (isBidding) {
+            endBid()
+          } else if (!disabled) {
+            startBid()
+          }
+        } else {
+          startBid()
+        }
       }
     }
 
     const handleKeyUp = (e: KeyboardEvent) => {
       if (e.code === 'Space' || e.code === 'Enter') {
         e.preventDefault()
-        endBid()
+        if (!toggleMode) {
+          endBid()
+        }
       }
     }
 
     window.addEventListener('keydown', handleKeyDown)
     window.addEventListener('keyup', handleKeyUp)
-    window.addEventListener('mouseup', handleMouseUp)
-    window.addEventListener('touchend', handleTouchEnd)
+    if (!toggleMode) {
+      window.addEventListener('mouseup', handleMouseUp)
+      window.addEventListener('touchend', handleTouchEnd)
+    }
 
     return () => {
       window.removeEventListener('keydown', handleKeyDown)
@@ -81,7 +109,7 @@ export default function BidButton({
       window.removeEventListener('mouseup', handleMouseUp)
       window.removeEventListener('touchend', handleTouchEnd)
     }
-  }, [startBid, endBid, handleMouseUp, handleTouchEnd])
+  }, [toggleMode, isBidding, disabled, startBid, endBid, handleMouseUp, handleTouchEnd])
 
   // Calculate progress for visual feedback
   const progress = Math.min(currentBidMs / gracePeriodMs, 1)
@@ -89,8 +117,26 @@ export default function BidButton({
 
   return (
     <div className="flex flex-col items-center">
+      {/* Mode toggle */}
+      <div className="mb-4 flex items-center gap-2 text-sm">
+        <span className={toggleMode ? 'text-gray-500' : 'text-white'}>Hold</span>
+        <button
+          onClick={() => setToggleMode(!toggleMode)}
+          className="relative w-12 h-6 bg-gray-700 rounded-full transition-colors"
+          aria-label="Toggle bid mode"
+        >
+          <div
+            className={`absolute top-1 w-4 h-4 bg-indigo-500 rounded-full transition-all ${
+              toggleMode ? 'left-7' : 'left-1'
+            }`}
+          />
+        </button>
+        <span className={toggleMode ? 'text-white' : 'text-gray-500'}>Toggle</span>
+      </div>
+
       <button
         ref={buttonRef}
+        onClick={handleClick}
         onMouseDown={handleMouseDown}
         onTouchStart={handleTouchStart}
         disabled={disabled}
@@ -148,7 +194,9 @@ export default function BidButton({
               ? inGracePeriod
                 ? 'SAFE'
                 : 'BIDDING'
-              : 'HOLD TO BID'
+              : toggleMode
+                ? 'TAP TO BID'
+                : 'HOLD TO BID'
           }
         </span>
       </button>
@@ -158,9 +206,11 @@ export default function BidButton({
           ? 'Waiting for round to start...'
           : isBidding
             ? inGracePeriod
-              ? 'Release now to cancel bid!'
-              : 'Bidding in progress - release to submit'
-            : 'Hold the button or press Space/Enter'
+              ? toggleMode ? 'Tap again to cancel bid!' : 'Release now to cancel bid!'
+              : toggleMode ? 'Tap again to submit bid' : 'Release to submit bid'
+            : toggleMode
+              ? 'Tap the button or press Space/Enter'
+              : 'Hold the button or press Space/Enter'
         }
       </p>
     </div>

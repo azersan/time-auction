@@ -13,6 +13,7 @@ import {
   TIE_THRESHOLD_MS,
   PRE_ROUND_COUNTDOWN_MS,
   ROUND_RESULTS_DISPLAY_MS,
+  MIN_BIDDING_PHASE_MS,
   RECONNECT_WINDOW_MS,
   MAX_LATENCY_COMPENSATION_MS,
 } from '../../../shared/constants'
@@ -222,13 +223,17 @@ export class GameRoom implements DurableObject {
         // Schedule grace period end
         await this.state.storage.setAlarm(now + this.tableState.settings.gracePeriodMs)
       } else if (this.tableState.roundPhase === 'grace_period') {
-        // Grace period ended
+        // Grace period ended, start bidding phase
         this.tableState.roundPhase = 'bidding'
+        this.tableState.phaseStartTime = now
 
         this.broadcast({ type: 'graceExpired' })
 
-        // Check if all players have released
-        this.checkRoundEnd()
+        // Schedule minimum bidding phase end
+        await this.state.storage.setAlarm(now + MIN_BIDDING_PHASE_MS)
+      } else if (this.tableState.roundPhase === 'bidding') {
+        // Minimum bidding time has passed, check if round should end
+        this.checkRoundEnd(true)
       } else if (this.tableState.roundPhase === 'resolution') {
         // Resolution phase finished, start next round or end game
         if (this.tableState.currentRound >= this.tableState.settings.numRounds) {
@@ -525,15 +530,21 @@ export class GameRoom implements DurableObject {
     await this.saveState()
   }
 
-  private checkRoundEnd(): void {
+  private checkRoundEnd(forceCheck = false): void {
     if (!this.tableState || this.tableState.roundPhase !== 'bidding') return
 
-    // Round ends when all connected players have released
-    const allReleased = Array.from(this.players.values())
-      .filter(p => p.isConnected)
-      .every(p => p.hasReleasedThisRound || p.bidStartTime === null)
+    const connectedPlayers = Array.from(this.players.values()).filter(p => p.isConnected)
 
-    if (allReleased) {
+    // Check if all connected players have released (not actively bidding)
+    const allReleased = connectedPlayers.every(p => p.hasReleasedThisRound || p.bidStartTime === null)
+
+    // Check if at least one player actually made a bid
+    const someoneActuallyBid = connectedPlayers.some(p => p.hasReleasedThisRound)
+
+    // Round ends if:
+    // 1. All players released AND at least one person bid, OR
+    // 2. All players released AND minimum bidding time passed (forceCheck)
+    if (allReleased && (someoneActuallyBid || forceCheck)) {
       this.endRound()
     }
   }
