@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { API_BASE_URL } from '@/lib/config'
 import {
   DEFAULT_STARTING_TIME_MS,
   DEFAULT_NUM_ROUNDS,
@@ -39,7 +40,7 @@ export default function CreateTableForm({ onBack }: Props) {
     setError(null)
 
     try {
-      const response = await fetch('/api/tables', {
+      const response = await fetch(`${API_BASE_URL}/api/tables`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

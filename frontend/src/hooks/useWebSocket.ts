@@ -1,5 +1,6 @@
 import { useEffect, useRef, useCallback, useState } from 'react'
 import type { ClientMessage, ServerMessage } from '@shared/types'
+import { WS_BASE_URL } from '@/lib/config'
 
 interface UseWebSocketOptions {
   onMessage?: (message: ServerMessage) => void
@@ -15,8 +16,7 @@ export function useWebSocket(tableId: string | null, options: UseWebSocketOption
   const connect = useCallback(() => {
     if (!tableId) return
 
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const wsUrl = `${protocol}//${window.location.host}/ws/${tableId}`
+    const wsUrl = `${WS_BASE_URL}/ws/${tableId}`
 
     const ws = new WebSocket(wsUrl)
     wsRef.current = ws
